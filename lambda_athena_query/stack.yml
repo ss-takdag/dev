@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: "2010-09-09"
+#Parameters:
+    # BucketName:
+    #   Description: Bucket for s3 Event notifications
+    #   Type: String
+    #   Default: dev-ss-s3notify
+Parameters:
+  AlarmEmail:
+    Default: "webhook-test-aaaafddvzsbgggzqt2ja4ovlte@sendsafely.slack.com"
+    Description: "Email address to notify of operational issues"
+    Type: "String"
+
+Resources:
+#   MyQueue:
+#     Type: AWS::SQS::Queue
+#     Properties:
+#       QueueName: "SampleQueue"
+
+
+####################
+#####SNS SECTION#####
+####################
+  AlarmTopicInternal:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        -
+          Endpoint:
+            Ref: "AlarmEmail"
+          Protocol: "email"
+
+### MOVED TO NEW SNS STACK
+  # AlarmTopicExternal:
+  #   Type: AWS::SNS::Topic
+  #   Properties:
+  #     Subscription:
+  #       -
+  #         Endpoint:
+  #           Ref: "AlarmEmail"
+  #         Protocol: "email"
+
+  # MySubscription:
+  #   Type: AWS::SNS::Subscription
+  #   Properties:
+  #     Endpoint: !GetAtt LambdaFunction.Arn
+  #     Protocol: lambda
+  #     TopicArn: !Ref 'AlarmTopicInternal'
+
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Id: MyTopicPolicy
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Statement-id
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref 'AlarmTopicInternal'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Join
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - dev-ss-s3notify2
+      Topics:
+        - !Ref 'AlarmTopicInternal'
+
+####################
+#####IAM SECTION####
+####################
+  WatcherRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+
+  RolePolicyLambda:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "ss_webhook"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+              - "logs:DescribeLogStreams"
+              - "logs:GetLogEvents"
+              - "sns:Publish"
+              - "sns:ListTopics"
+              - "sqs:RecieveMessage"
+              - "sqs:GetQueueAttributes"
+              - "sqs:DeleteMessage"
+              - "cloudwatch:PutMetricData"
+              - "ses:*"
+              - "athena:StartQueryExecution"
+              - "s3:GetBucketLocation"
+              - "s3:GetObject"
+              - "s3:ListBucket"
+              - "s3:ListBucketMultipartUploads"
+              - "s3:ListMultipartUploadParts"
+              - "s3:AbortMultipartUpload"
+              - "s3:CreateBucket"
+              - "s3:PutObject"
+              - "glue:CreateDatabase"
+              - "glue:DeleteDatabase"
+              - "glue:GetDatabase"
+              - "glue:GetDatabases"
+              - "glue:UpdateDatabase"
+              - "glue:CreateTable"
+              - "glue:DeleteTable"
+              - "glue:BatchDeleteTable"
+              - "glue:UpdateTable"
+              - "glue:GetTable"
+              - "glue:GetTables"
+              - "glue:BatchCreatePartition"
+              - "glue:CreatePartition"
+              - "glue:DeletePartition"
+              - "glue:BatchDeletePartition"
+              - "glue:UpdatePartition"
+              - "glue:GetPartition"
+              - "glue:GetPartitions"
+              - "glue:BatchGetPartition"
+              - "athena:*"
+            Resource: '*'
+            #Resource: !GetAtt BucketWatcher.Arn
+
+      Roles:
+        - Ref: "WatcherRole"
+
+  RolePolicyS:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "ss_sm"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "secretsmanager:GetResourcePolicy"
+              - "secretsmanager:GetSecretValue"
+              - "secretsmanager:DescribeSecret"
+              - "secretsmanager:ListSecretVersionIds"
+            Resource: arn:aws:secretsmanager:us-east-1:050266051289:secret:gauth/athena-Rva78S
+          - Effect: "Allow"
+            Action: "secretsmanager:ListSecrets"
+            Resource: "*"
+
+      Roles:
+        - Ref: "WatcherRole"
+
+
+####################
+#####S3 SECTION#####
+####################
+  Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: "dev-ss-s3notify2"
+      AccessControl: Private
+      NotificationConfiguration:
+         TopicConfigurations:
+          - Topic: !Ref 'AlarmTopicInternal'
+            Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  # - Name: prefix
+                  #   Value: test/
+                  - Name: suffix
+                    Value: .csv
+
+####################
+###LAMBDA SECTION###
+####################
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: !GetAtt WatcherRole.Arn # !Ref WatcherRole
+      PackageType: Image
+      Code:
+        ImageUri: 050266051289.dkr.ecr.us-east-1.amazonaws.com/ss_test_ecr:1.9
+      Timeout: 120
+      TracingConfig:
+        Mode: Active
+
+   #INVOKE PERMISSIONS
+  # LambdaInvokePermission:
+  #   Type: AWS::Lambda::Permission
+  #   Properties:
+  #     Action: lambda:InvokeFunction
+  #     Principal: sns.amazonaws.com
+  #     SourceArn:  !Ref AlarmTopicInternal
+  #     FunctionName: !Ref LambdaFunction
+
+  BucketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LambdaFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !GetAtt Bucket.Arn
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref "LambdaFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "ScheduledRule"
+          - "Arn"
+
+### EVENT BRIDGE SECTION
+  ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "ScheduledRule"
+      ScheduleExpression: "cron(05 19 * * ? *)"
+      State: "ENABLED"
+      Targets:
+        -
+          Arn:
+            Fn::GetAtt:
+              - "LambdaFunction"
+              - "Arn"
+          Id: "TargetFunctionV1"
